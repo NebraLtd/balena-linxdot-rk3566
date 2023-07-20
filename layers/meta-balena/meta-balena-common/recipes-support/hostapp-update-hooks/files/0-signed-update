@@ -1,0 +1,104 @@
+#!/bin/sh
+
+#
+# Script which configures balena keys into hardware secure elements and
+# prevents updating to a non-signed system if secure boot is enabled
+#
+
+set -o errexit
+
+# shellcheck source=/dev/null
+. /usr/libexec/os-helpers-logging
+
+DURING_UPDATE="${DURING_UPDATE:-0}"
+UMOUNT_EFIVARS=0
+SECUREBOOT_VAR="8be4df61-93ca-11d2-aa0d-00e098032b8c-SecureBoot"
+SETUPMODE_VAR="8be4df61-93ca-11d2-aa0d-00e098032b8c-SetupMode"
+EFIVAR_RE="s,^[^ ]*  *\([^ ]*\) .*$,\1,"
+EFIVARS_MOUNTDIR="/sys/firmware/efi/efivars"
+
+exit_with_msg() {
+    result=$?
+    exit ${result}
+}
+trap exit_with_msg EXIT
+
+mountEfiVars() {
+    # Mount efivarfs if necessary
+    if ! mount | grep -q "type efivarfs"; then
+        mount -t efivarfs efivarfs "${EFIVARS_MOUNTDIR}"
+        UMOUNT_EFIVARS=1
+    fi
+}
+
+umountEfiVars() {
+    # Leave the system in the original state - unmount efivarfs if we mounted it
+    if [ "${UMOUNT_EFIVARS}" = 1 ]; then
+        umount "${EFIVARS_MOUNTDIR}"
+        UMOUNT_EFIVARS=0
+    fi
+}
+
+updateKeys() {
+    # This only updates db at this moment
+    # PK and KEK need to be implemented
+    DB_SYSFS_FILE="db-d719b2cb-3d3a-4596-a3bc-dad00e67656f"
+    chattr -i "${EFIVARS_MOUNTDIR}/${DB_SYSFS_FILE}"
+    efi-updatevar -a -f "/resin-boot/balena-keys/db.auth" db
+    chattr +i "${EFIVARS_MOUNTDIR}/${DB_SYSFS_FILE}"
+
+    # dbx is updated by rollback-health when it confirms that HUP went through
+    # here we just copy out the dbx update from the active partition to a pending
+    # directory for rollback-health to find it later
+    PENDING_DBX_DIR="/mnt/data/balenahup/pending-dbx"
+    ACTIVE_ESL_FILE=$(find "/mnt/sysroot/active" -name "db.esl")
+    ACTIVE_DBX_FILE=$(find "/mnt/sysroot/active" -name "dbx.auth")
+    ACTIVE_DBX_FILE_MD5SUM=$(md5sum "${ACTIVE_DBX_FILE}" | cut -d " " -f 1)
+    DEST_FILE="${PENDING_DBX_DIR}/dbx-${ACTIVE_DBX_FILE_MD5SUM}.auth"
+
+    mkdir -p "${PENDING_DBX_DIR}"
+    cp -a "${ACTIVE_DBX_FILE}" "${DEST_FILE}"
+    sig-list-to-certs "${ACTIVE_ESL_FILE}" "${DEST_FILE}"
+}
+
+# Only applicable in the new OS container
+if [ "${DURING_UPDATE}" != 1 ]; then
+    exit 0
+fi
+
+# Only applicable on UEFI systems
+if [ ! -d "/sys/firmware/efi" ]; then
+    exit 0
+fi
+
+mountEfiVars
+
+# Read EFI variables
+SECUREBOOT_VAL=$(efivar -p -n "${SECUREBOOT_VAR}" | tail -n 1 | sed -e "${EFIVAR_RE}")
+SETUPMODE_VAL=$(efivar -p -n "${SETUPMODE_VAR}" | tail -n 1 | sed -e "${EFIVAR_RE}")
+
+# Only applicable when in secure boot mode
+if [ -z "${SECUREBOOT_VAL}" ] || [ "${SECUREBOOT_VAL}" -ne "1" ]; then
+    umountEfiVars
+    exit 0
+fi
+
+# Not applicable when secure boot is in setup mode
+if [ -n "${SETUPMODE_VAL}" ] && [ "${SETUPMODE_VAL}" -ne "0" ]; then
+    umountEfiVars
+    exit 0
+fi
+
+# Not applicable if the signatures are in place
+if [ -f "/resin-boot/EFI/BOOT/grub.cfg.sig" ]; then
+    updateKeys
+    umountEfiVars
+    exit $?
+fi
+
+umountEfiVars
+
+# At this point we are sure the current OS is running in secure boot mode
+# and the new image is not signed, abort the update
+error "Trying to update to an unsigned OS version while in secure boot mode"
+exit 1

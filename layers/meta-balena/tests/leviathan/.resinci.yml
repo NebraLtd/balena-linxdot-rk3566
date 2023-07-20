@@ -1,0 +1,6 @@
+---
+reviewers: 1
+docker:
+  publish: false
+npm:
+  run: false

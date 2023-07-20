@@ -1,0 +1,34 @@
+#!/bin/sh
+
+#
+# Script which configures the resinOS_uEnv,txt to use an updated root index
+#
+
+set -o errexit
+
+. /usr/sbin/balena-config-vars
+
+DURING_UPDATE=${DURING_UPDATE:-0}
+
+if [ "$DURING_UPDATE" = "1" ]; then
+	SYSROOT="/mnt/sysroot/inactive"
+else
+	SYSROOT="/mnt/sysroot/active"
+fi
+
+new_part=$(findmnt --noheadings --canonicalize --output SOURCE $SYSROOT -t ext4)
+blockdev=$(basename "$new_part")
+new_part_idx=$(cat "/sys/class/block/$blockdev/partition")
+
+# Convert to hex as u-boot expects hex partition numbers. Especially needed for jetson devices
+new_part_idx=$(printf "%x" $new_part_idx)
+
+printf "[INFO] Switching uboot root partition index to %s..." "$new_part_idx..."
+tmpfile="$(mktemp)"
+echo "resin_root_part=$new_part_idx" > ${tmpfile}
+echo "upgrade_available=$DURING_UPDATE" >> ${tmpfile}
+"${MV}" "${tmpfile}" "/mnt/boot/resinOS_uEnv.txt"
+# It is possible to get into a strange state with multiple bootcount.env files so use a delimiter to delete them all.
+# See https://github.com/snapcore/snapd/pull/5145 for more detail
+rm -f /mnt/boot/*bootcount.env* || true
+printf " done.\n"

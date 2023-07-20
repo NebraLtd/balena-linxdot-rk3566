@@ -1,0 +1,9 @@
+[Unit]
+Description=Initialize Bobcat RK3566 Board
+Before=network-pre.target
+Wants=network-pre.target
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/board-init.sh
+[Install]
+WantedBy=multi-user.target

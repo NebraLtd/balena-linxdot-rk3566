@@ -1,0 +1,169 @@
+#!/bin/sh
+#
+# Copyright 2018-2021 Balena Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -o errexit
+
+. /usr/sbin/balena-config-vars
+. /usr/bin/rollback-parse-bootloader
+
+if ! rollback-check-version; then
+	rollback-stop || true;
+	exit 1
+fi
+
+TIMEOUT=60
+COUNT=15
+REBOOT_TIMEOUT=900
+
+DURING_UPDATE=${DURING_UPDATE:-0}
+
+run_hooks_from_inactive () {
+	echo "Rollback: Running hooks from previous rootfs"
+	old_rootfs=$(/mnt/sysroot/active/current/boot/init -sysroot /mnt/sysroot/inactive)
+	mount -t proc proc "${old_rootfs}/proc/"
+	mount -o bind /dev "${old_rootfs}/dev"
+	mount --bind /mnt/boot/ "${old_rootfs}/mnt/boot/"
+	mount --bind /mnt/state/ "${old_rootfs}/mnt/state/"
+	mount --bind /mnt/sysroot/ "${old_rootfs}/mnt/sysroot/"
+	mount --bind /mnt/sysroot/active/ "${old_rootfs}/mnt/sysroot/active/"
+	mount --bind /mnt/sysroot/inactive/ "${old_rootfs}/mnt/sysroot/inactive/"
+	mount -t sysfs sysfs "${old_rootfs}/sys/"
+
+	# In case of secure boot the boot and EFI partitions are split apart
+	# The EFI partition must be bind-mounted as well to be able to deploy
+	# files under /mnt/boot/EFI
+	if [ -L /mnt/boot/EFI ]; then
+		mkdir -p "${old_rootfs}/mnt/efi"
+		mount --bind /mnt/efi "${old_rootfs}/mnt/efi"
+	fi
+
+	# DURING_UPDATE tells hooks to use the boot files from inactive
+	# which are the good set of files in ROLLBACK_ALTBOOT mode
+	# also tells the bootloaders to switch roots
+	cat << EOF | chroot "${old_rootfs}"
+	DURING_UPDATE=1 /usr/bin/hostapp-update-hooks
+EOF
+}
+
+secureboot_apply_dbx() {
+	EFI_DIR="/sys/firmware/efi"
+	EFIVARS_DIR="${EFI_DIR}/efivars"
+	EFIVAR_RE="s,^[^ ]*  *\([^ ]*\) .*$,\1,"
+	SECUREBOOT_VAR="8be4df61-93ca-11d2-aa0d-00e098032b8c-SecureBoot"
+	DBX_SYSFS_FILE="dbx-d719b2cb-3d3a-4596-a3bc-dad00e67656f"
+	PENDING_DBX_DIR="/mnt/data/balenahup/pending-dbx"
+	CURRENT_DB_ESL="/resin-boot/balena-keys/db.esl"
+
+	if [ ! -d "${EFI_DIR}" ]; then
+		# Not an EFI system, nothing to do
+		return
+	fi
+
+	SECUREBOOT_VAL=$(efivar -p -n "${SECUREBOOT_VAR}" | tail -n 1 | sed -e "${EFIVAR_RE}")
+	if [ "${SECUREBOOT_VAL}" -ne 1 ]; then
+		# Secure boot disabled, nothing to do
+		return
+	fi
+
+	if [ ! -d "${PENDING_DBX_DIR}" ]; then
+		# Unexpected state - the directory should have been created by HUP
+		# With it missing, there is nothing we can do
+		echo "Rollback: Directory '${PENDING_DBX_DIR}' should exist but it does not"
+		return
+	fi
+
+	echo "Rollback: Applying pending DBX updates to prevent formerly allowed OS versions to boot"
+	TMPDIR=$(mktemp -d)
+	sig-list-to-certs "${CURRENT_DB_ESL}" "${TMPDIR}/current"
+	# When dbx is empty the immutable attribute is not set, chattr can safely fail
+	chattr -i "${EFIVARS_DIR}/${DBX_SYSFS_FILE}" || :
+	for PENDING_DBX_FILE in "${PENDING_DBX_DIR}/dbx-"*.auth; do
+		if [ "${PENDING_DBX_FILE}" = "${PENDING_DBX_DIR}/dbx-*.auth" ]; then
+			# Nothing matched the glob
+			break
+		fi
+
+		# Check whether any of the hashes we are about to blacklist overlap
+		# with the hashes of the new OS. If so, do not apply the update yet,
+		# otherwise the system would not be bootable on reboot. Leave the update
+		# pending and it will be applied once the hashes change.
+		OVERLAP=0
+		for PENDING_HASH in "${PENDING_DBX_FILE}-"*.hash; do
+			for CURRENT_HASH in "${TMPDIR}/current-"*.hash; do
+				if cmp -s "${PENDING_HASH}" "${CURRENT_HASH}"; then
+					OVERLAP=1
+				fi
+			done
+		done
+		if [ "${OVERLAP}" = "1" ]; then
+			echo "Rollback: Not applying ${PENDING_DBX_FILE} - hashes overlap"
+			continue
+		fi
+
+		echo "Rollback: Applying ${PENDING_DBX_FILE}"
+		if efi-updatevar -a -f "${PENDING_DBX_FILE}" dbx; then
+			rm -f "${PENDING_DBX_FILE}"*
+		else
+			echo "Rollback: Failed to apply ${PENDING_DBX_FILE}, keeping it pending"
+		fi
+	done
+	chattr +i "${EFIVARS_DIR}/${DBX_SYSFS_FILE}" || :
+	rm -rf "${TMPDIR}"
+}
+
+echo "Rollback: Health sanity check"
+
+if [ "$resin_root_part" = "$current_part_idx" ]; then
+	if [ $upgrade_available -eq 1 ]; then
+		echo "Rollback: HUP detected. Running healthchecks after $TIMEOUT seconds"
+		sleep $TIMEOUT
+		echo "Rollback: Running healthchecks to see if new system is stable"
+		counter=0
+		while ! rollback-tests ; do
+			echo "Trying healthcheck again $counter of $COUNT attempts"
+			sleep $TIMEOUT
+			counter=$((counter + 1))
+			if [ $counter -ge $COUNT ]; then
+				echo "Rollback: Looks like we failed some health check. Rolling back"
+				if run_hooks_from_inactive; then
+					touch /mnt/state/rollback-health-triggered
+					echo "Rollback: Failed heathchecks. Rebooting to previous rootfs"
+				else
+					touch /mnt/state/rollback-health-failed
+					echo "Rollback: Failed to run previous hooks. Rebooting to recover system"
+				fi
+				rollback-stop || true
+				sleep 10
+				reboot
+			fi
+		done
+	    echo "Rollback: new OS seems stable. Preventing further rollbacks"
+	    rollback-stop || true
+	    echo "Rollback: Running commit hooks"
+	    hostapp-update-hooks-v2 --commit || true
+	    secureboot_apply_dbx
+	else
+		echo "Rollback: Nothing to do. Looks like we are in ROLLBACK_HEALTHY state. Why is script running?"
+		rollback-stop || true
+	fi
+else
+	echo "Rollback: Looks like we are running in altboot mode. rollback-altboot.services should reboot the system in a while."
+	echo "Rollback: Sleeping for $REBOOT_TIMEOUT seconds"
+	sleep $REBOOT_TIMEOUT
+	echo "Rollback: Looks like something bad happened to rollback-altboot.service. Lets force a reboot"
+	rollback-stop || true
+	systemctl --force reboot
+fi

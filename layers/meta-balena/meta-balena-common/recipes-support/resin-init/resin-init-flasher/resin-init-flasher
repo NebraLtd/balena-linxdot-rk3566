@@ -1,0 +1,644 @@
+#!/bin/bash
+#
+# Script which burns an image from an external device to an internal device
+# Assumptions:
+#   * image is in boot partition of external device
+#   * all needed variables are configured in resin-init-flasher.conf
+#   * filesystems labeling scheme is persistent (flasher-*/resin-*)
+# Variables in resin-init-flasher.conf
+#  INTERNAL_DEVICE_KERNEL                 - internal device (enumerated by kernel) to be flashed
+#                                             * it's impossible to known what dev to flash because
+#                                               we don't have any labels before flashing something
+#                                               so we need this info
+#                                             * when multiple entries provided, the first block device
+#                                               found will be used
+#  INTERNAL_DEVICE_BOOTLOADER_CONFIG      - name of the bootloader config for internal media boot
+#  INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH - relative path to internal boot partition where
+#                                               INTERNAL_DEVICE_BOOTLOADER_CONFIG will be copied to
+#  BALENA_IMAGE                            - image to be flashed on internal device
+#                                             * this is defaulted to
+#                                               balena-image-${MACHINE}.balenaos-img and should be
+#                                               just fine
+#  BOOTLOADER_FLASH_DEVICE                - device where bootloader binary will be flashed
+#                                             * this variable should be set together with
+#                                               BOOTLOADER_IMAGE
+#                                             * if this variable is not set we DO NOT flash u-boot
+#                                               to internal flash device
+#  BOOTLOADER_IMAGE                       - name of the u-boot binary
+#  BOOTLOADER_BLOCK_SIZE_OFFSET           - offset at which we write u-boot binary
+#  BOOTLOADER_SKIP_OUTPUT_BLOCKS          - number of blocks to skip when writing bootloader
+#                                             * this is the seek param to dd
+#
+#  Certain hardware requires that the bootloader is split into MLO and u-boot.img rather than having
+# it all bundled in a u-boot.img binary. To address this requirement, this flashing script will further
+# look for variables called BOOTLOADER_FLASH_DEVICE_1, BOOTLOADER_IMAGE_1, BOOTLOADER_BLOCK_SIZE_OFFSET_1,
+# BOOTLOADER_SKIP_OUTPUT_BLOCKS_1 to be used in the same way as BOOTLOADER_FLASH_DEVICE, BOOTLOADER_IMAGE,
+# BOOTLOADER_BLOCK_SIZE_OFFSET, BOOTLOADER_SKIP_OUTPUT_BLOCKS so that user can specify both MLO and u-boot
+# to be written in the respective devices.
+
+set -e
+
+# Very long variables :)
+INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT=/tmp/internal_boot
+FLASHER_CONF_FILE=/etc/resin-init-flasher.conf
+LUKS=0
+EFI=0
+EFIVARS_MOUNTDIR="/sys/firmware/efi/efivars"
+SECUREBOOT_ENABLED=0
+BOOT_ENTRY_LABEL="balenaOS"
+LOADER_PATH="/EFI/BOOT/bootx64.efi"
+
+. /usr/libexec/os-helpers-fs
+. /usr/libexec/os-helpers-logging
+
+function clean {
+    echo "[resin-init-flasher] Cleanup."
+    umount $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT > /dev/null 2>&1 || true
+    umount $INTERNAL_DEVICE_CONF_PART_MOUNTPOINT > /dev/null 2>&1 || true
+}
+
+trap clean ERR
+
+function report_progress() {
+    _ratio="${1}"
+    _msg="${2}"
+
+    if command -v "resin-device-progress"  > /dev/null && [ -n "${API_ENDPOINT}" ]; then
+        resin-device-progress --percentage "${_ratio}" --state "${_msg}" || true
+    else
+        info "Unprovisioned: Percentage ${_ratio}, status ${_msg}"
+    fi
+}
+
+function dd_with_progress {
+    SRC=$1
+    DEST=$2
+    OFFSET=$3
+    TOTAL_SIZE=$4
+
+    dd "if=$SRC" "of=$DEST" conv=sparse bs=4M 2> /tmp/dd_progress_log & DD_PID=$!
+
+    if ! kill -0 $DD_PID; then
+        # dd might have been too fast, let's check exit status if it is no longer running
+        if ! ps | grep "^ *$DD_PID " && wait "$DD_PID"; then
+            # dd is not running and the exitcode was 0, dd completed too fast to report progress
+            return
+        fi
+
+        # Either dd is still running or exit status reported error
+        fail "Failed to flash internal device $INTERNAL_DEVICE_KERNEL."
+    fi
+
+    # Give dd chance to register the signal handler
+    # This was originally hidden behind determining image size
+    sleep 1
+
+    while kill -USR1 $DD_PID 2>/dev/null; do
+        sleep 3
+        if [ ! -s /tmp/dd_progress_log ]; then
+            continue
+        fi
+        WRITTEN_BYTES=$(awk 'END{print $1}' /tmp/dd_progress_log)
+        TOTAL_WRITTEN_BYTES=$["$WRITTEN_BYTES" + "$OFFSET"]
+        let RATIO=$TOTAL_WRITTEN_BYTES*100/$TOTAL_SIZE || true
+        report_progress "${RATIO}" "Flashing balenaOS on internal media"
+        truncate -s 0 /tmp/dd_progress_log
+    done
+}
+
+########
+# MAIN #
+########
+
+# Only root
+if [ "$EUID" -ne 0 ]; then
+    fail "Please run as root."
+fi
+
+info "Board specific initialization..."
+/usr/bin/resin-init-board
+
+# Configuration file
+if [ -f $FLASHER_CONF_FILE ]; then
+    source $FLASHER_CONF_FILE
+else
+    fail "No configuration for resin-init-flasher."
+fi
+info "resin-init-flasher configuration found."
+
+# Find path to image
+_balena_image=$(find / -xdev -type f -name "${BALENA_IMAGE}")
+if [ ! -f "${_balena_image}" ]; then
+    fail "Raw image ${BALENA_IMAGE}  not found in rootfs"
+fi
+BALENA_IMAGE="${_balena_image}"
+EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT="/mnt/boot"
+
+# Balena configuration file
+if [ -f /usr/sbin/balena-config-vars ]; then
+    source /usr/sbin/balena-config-vars
+else
+    fail "No balena configuration found."
+fi
+info "balena configuration found."
+
+# BALENA_BOOT_MOUNTPOINT should exist
+if [ ! -d "$BALENA_BOOT_MOUNTPOINT" ]; then
+	fail "$BALENA_BOOT_MOUNTPOINT : No such directory."
+fi
+
+# CONFIG_PATH should exist
+if [ ! -f "$CONFIG_PATH" ]; then
+    fail "$CONFIG_PATH : No such file."
+fi
+
+# Give a chance to openvpn to come alive
+STARTTIME=$(date +%s)
+ENDTIME="$STARTTIME"
+TIMEOUT=15
+if command -v "systemctl"; then
+    while [ "$(systemctl is-active openvpn)" != "active" ]
+    do
+        if [ $((ENDTIME - STARTTIME)) -le $TIMEOUT ]; then
+            sleep 1 && ENDTIME=$((ENDTIME + 1))
+        else
+            info "Timeout while waiting for openvpn to come alive. No network?"
+            break
+        fi
+    done
+fi
+
+if [ -z "${INTERNAL_DEVICE_KERNEL}" ]; then
+    report_progress 100 "Installer is not supported on this device type."
+    fail "Undefined target programming device - make sure INTERNAL_DEVICE_KERNEL is defined"
+fi
+
+# Flash Resin image on internal device
+info "Flash internal device... will take around 5 minutes... "
+internal_dev=$(get_internal_device "${INTERNAL_DEVICE_KERNEL}")
+if [ -z "$internal_dev" ]; then
+    report_progress 100 "Failed to find any block devices."
+    fail "Failed to find any block devices in $INTERNAL_DEVICE_KERNEL."
+fi
+info "$internal_dev will be used for flashing."
+
+IMAGE_FILE_SIZE=$(wc -c "$BALENA_IMAGE" | awk '{print $1}')
+
+# Check for UEFI mode and set variables accordingly.
+if [ -d /sys/firmware/efi ]; then
+    EFI=1
+    SECUREBOOT_ENABLED=$(
+        [ "$(jq .installer.secureboot "${CONFIG_PATH}")" = "true" ] \
+        && echo 1 \
+        || echo 0)
+    SECUREBOOT_VAR=$(efivar -p -n 8be4df61-93ca-11d2-aa0d-00e098032b8c-SecureBoot \
+        | awk 'NR==1, $1 == "Value:" {next}; NF {print $2}')
+    SETUPMODE_VAR=$(efivar -p -n 8be4df61-93ca-11d2-aa0d-00e098032b8c-SetupMode \
+        | awk 'NR==1, $1 == "Value:" {next}; NF {print $2}')
+
+    if [ "${SECUREBOOT_ENABLED}" != "1" ]; then
+        if [ "${SECUREBOOT_VAR}" -eq "1" ] && [ "${SETUPMODE_VAR}" -ne "1" ]; then
+            # Bail out when keys are already enrolled but secure boot is not
+	    # enabled in config.json, as the installed system will not have
+	    # FDE, and it's ambiguous if the user wants secure boot
+            fail "Secure boot keys are enrolled but secure boot is not enabled"
+        fi
+    else
+        if [ -z "${SECUREBOOT_VAR}" ]; then
+            fail "Secure boot is configured, but is not supported in firmware."
+        fi
+
+        if [ ! -d "${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/balena-keys" ]; then
+            fail "Secure boot is supported in firmware, but the image is not signed"
+        fi
+
+        info "Secure boot is enabled, proceeding with lockdown"
+        LUKS=1
+
+        if [ "${SETUPMODE_VAR}" -eq "1" ]; then
+            info "Secure boot setup mode detected - programming keys"
+            # Enroll PK last, as it should disable setup mode
+            for e in db KEK PK; do
+                # Remove immutable attribute
+                chattr -i ${EFIVARS_MOUNTDIR}/${e}* > /dev/null || true
+
+                # Use the .esl format for db. This only works in setup mode and above we have confirmed
+                # it is enabled. The .auth files are signed for appending during updates
+                # and while most UEFI implementations don't care, some of them will only allow
+                # to actually append. Here we want to replace the existing keys by ours.
+                FORMAT="auth"
+                EXTRA_ARGS=""
+                if [ "${e}" = "db" ]; then
+                    FORMAT="esl"
+                    EXTRA_ARGS="-e"
+                fi
+
+                KEY_FILE="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/balena-keys/${e}.${FORMAT}"
+                if [ -f "${KEY_FILE}" ]; then
+                    /usr/bin/efi-updatevar ${EXTRA_ARGS} -f "${KEY_FILE}" "${e}"
+                fi
+            done
+            # Check that we're in user mode
+            SETUPMODE_VAR=$(efivar -p -n 8be4df61-93ca-11d2-aa0d-00e098032b8c-SetupMode \
+                | awk 'NR==1, $1 == "Value:" {next}; NF {print $2}')
+            if [ "${SETUPMODE_VAR}" -eq "1" ]; then
+                # Setting up keys hasn't disabled setup mode, try a reboot into flasher
+                info "Rebooting flasher after secure mode setup to boot in secure boot mode."
+
+                # Create a one-time boot entry for signed flasher
+                # By default flasher is unsigned, after programming the keys we want to boot
+                # into a properly signed flasher as we expect secure boot to be enabled.
+                flasher_boot=$(findmnt --noheadings --canonicalize --output SOURCE /mnt/boot)
+                efibootmgr --create \
+                   --disk "/dev/$(lsblk -nlo pkname ${flasher_boot})" \
+                   --part "$(lsblk -nlo maj:min ${flasher_boot} | cut -d: -f2)" \
+                   --label "${BOOT_ENTRY_LABEL} installer with secure boot" \
+                   --loader "${LOADER_PATH}.secureboot"
+
+                sync
+                reboot -f
+            fi
+        fi
+    fi
+fi
+
+if [ "$LUKS" = "1" ]; then
+    # Include TPM2 helpers
+    . /usr/libexec/os-helpers-tpm2
+
+    # Generate password and encrypt it using the TPM
+    TPM="${TPM:-/dev/tpmrm0}"
+    if [ -e "$TPM" ]; then
+        info "$TPM will be used for LUKS operations"
+        export TPM2TOOLS_TCTI="device:$TPM"
+    else
+        info "$TPM not found, falling back to autodetection"
+    fi
+
+    # Generate a random passphrase
+    PASSPHRASE_FILE="$(mktemp)"
+    hw_gen_passphrase > "$PASSPHRASE_FILE"
+
+    # Since we tamper with boot order at the very end (putting balenaOS first), we omit PCR1 here
+    # PCR1 is added on first boot since this is the setup we want to lock against
+    # It is therefore important to boot the device at least once after provisioning in secure environment to enable the protection
+    TPM_RESULT_DIR=$(mktemp -d)
+    hw_encrypt_passphrase "$PASSPHRASE_FILE" "0,2,3" "$TPM_RESULT_DIR"
+
+    # Attach the image to a loop device
+    LOOP_DEVICE=$(losetup --find --show --partscan "$BALENA_IMAGE")
+    LOOP_DEVICE_NAME="${LOOP_DEVICE#/dev/}"
+
+    # Repartition the new drive
+    report_progress 0 "Starting flashing balenaOS on internal media"
+    info "Repartitioning $internal_dev for disk encryption"
+
+    # Align partition sizes to multiples of 4MB
+    PART_SIZE_ALIGN=$[4 * 1024 * 1024]
+
+    # Wipe the existing partition table and create a blank one
+    dd if=/dev/zero of="$internal_dev" bs=4M count=1
+    # Regardless of what the original image uses we always want GPT for secure boot + LUKS
+    # Though in practice MBR would work as well in most cases, it is not globally guaranteed
+    # and it is much harder to operate on due to the necessity of an extended partition
+    parted "$internal_dev" mktable gpt
+
+    info "Flashing boot partition"
+    ORIGINAL_BOOT_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" resin-boot)
+    ORIGINAL_BOOT_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$ORIGINAL_BOOT_PART_ID" "$PART_SIZE_ALIGN")
+    ORIGINAL_BOOT_START=$(get_part_start_by_number "$LOOP_DEVICE_NAME" "$ORIGINAL_BOOT_PART_ID")
+
+    parted "$internal_dev" \
+	    unit B \
+	    mkpart balena-efi \
+	    "$ORIGINAL_BOOT_START" \
+	    $["$ORIGINAL_BOOT_START" + "$ORIGINAL_BOOT_PART_SIZE" - 1]
+
+    EFI_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" resin-boot)
+
+    PART_PREFIX=""
+    if [ -e "${internal_dev}p${EFI_PART_ID}" ]; then
+        PART_PREFIX="p"
+    fi
+
+    dd if="${LOOP_DEVICE}p${ORIGINAL_BOOT_PART_ID}" of="${internal_dev}${PART_PREFIX}${EFI_PART_ID}" bs=4M
+    FLASHED="$ORIGINAL_BOOT_PART_SIZE"
+
+    # Relabel former boot partition
+    fatlabel "${internal_dev}${PART_PREFIX}${EFI_PART_ID}" "balena-efi"
+
+    # Find parition IDs
+    ROOTA_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" resin-rootA)
+    ROOTB_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" resin-rootB)
+    STATE_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" resin-state)
+    DATA_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" resin-data)
+
+    # Find partition sizes
+    BOOT_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$EFI_PART_ID" "$PART_SIZE_ALIGN")
+    ROOTA_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$ROOTA_PART_ID" "$PART_SIZE_ALIGN")
+    ROOTB_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$ROOTB_PART_ID" "$PART_SIZE_ALIGN")
+    STATE_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$STATE_PART_ID" "$PART_SIZE_ALIGN")
+    DATA_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$DATA_PART_ID" "$PART_SIZE_ALIGN")
+
+    # Find the beginning of the first partition
+    FIRST_PART_ID=$(echo -e "$ROOTA_PART_ID\n$ROOTB_PART_ID\n$STATE_PART_ID\n$DATA_PART_ID" | sort | head -n 1)
+    FIRST_PART_START=$(get_part_start_by_number "$LOOP_DEVICE_NAME" "$FIRST_PART_ID")
+
+    # Create new partitions with extra space for LUKS headers
+    # LUKS header size is 2MiB
+    LUKS_HEADER_SIZE=$[2 * 1024 * 1024]
+
+    BOOT_PART_END=$["$FIRST_PART_START" + "$BOOT_PART_SIZE" + "$LUKS_HEADER_SIZE" - 1]
+    parted -s "$internal_dev" -- unit B mkpart resin-boot "$FIRST_PART_START" "$BOOT_PART_END"
+
+    ROOTA_PART_END=$["$BOOT_PART_END" + "$ROOTA_PART_SIZE" + "$LUKS_HEADER_SIZE"]
+    parted -s "$internal_dev" -- unit B mkpart resin-rootA "$[$BOOT_PART_END + 1]" "$ROOTA_PART_END"
+
+    ROOTB_PART_END=$["$ROOTA_PART_END" + "$ROOTB_PART_SIZE" + "$LUKS_HEADER_SIZE"]
+    parted -s "$internal_dev" -- unit B mkpart resin-rootB "$[$ROOTA_PART_END + 1]" "$ROOTB_PART_END"
+
+    STATE_PART_END=$["$ROOTB_PART_END" + "$STATE_PART_SIZE" + "$LUKS_HEADER_SIZE"]
+    parted -s "$internal_dev" -- unit B mkpart resin-state "$[$ROOTB_PART_END + 1]" "$STATE_PART_END"
+
+    DATA_PART_END=$["$STATE_PART_END" + "$DATA_PART_SIZE" + "$LUKS_HEADER_SIZE"]
+    parted -s "$internal_dev" -- unit B mkpart resin-data "$[$STATE_PART_END + 1]" "$DATA_PART_END"
+
+    for PART_NAME in resin-boot resin-rootA resin-rootB resin-state resin-data; do
+        LOOP_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" "$PART_NAME")
+        INTERNAL_PART_ID=$(get_part_number_by_label "${internal_dev#/dev/}" "$PART_NAME" partlabel)
+
+        PART_DEV="$internal_dev$PART_PREFIX$INTERNAL_PART_ID"
+        info "Encrypting $PART_DEV"
+        cryptsetup -q luksFormat "$PART_DEV" "$PASSPHRASE_FILE"
+        cryptsetup luksOpen "$PART_DEV" "$PART_NAME" --key-file "$PASSPHRASE_FILE"
+        DM_DEV="/dev/mapper/$PART_NAME"
+        if [ "$PART_NAME" = "resin-boot" ]; then
+            # Just create the FS, we will split boot and efi below
+            mkfs.ext4 -L "resin-boot" "$DM_DEV"
+            continue
+        fi
+
+        info "Flashing $PART_DEV"
+
+        dd_with_progress "${LOOP_DEVICE}p$LOOP_PART_ID" "$DM_DEV" "$FLASHED" "$IMAGE_FILE_SIZE"
+
+        [ "$PART_NAME" = "resin-boot" ] && FLASHED=$["$FLASHED" + "$BOOT_PART_SIZE"]
+        [ "$PART_NAME" = "resin-rootA" ] && FLASHED=$["$FLASHED" + "$ROOTA_PART_SIZE"]
+        [ "$PART_NAME" = "resin-rootB" ] && FLASHED=$["$FLASHED" + "$ROOTB_PART_SIZE"]
+        [ "$PART_NAME" = "resin-state" ] && FLASHED=$["$FLASHED" + "$STATE_PART_SIZE"]
+        [ "$PART_NAME" = "resin-data" ] && FLASHED=$["$FLASHED" + "$DATA_PART_SIZE"]
+
+        sync "$DM_DEV"
+    done
+
+    rm -f "$PASSPHRASE_FILE"
+    losetup -d "$LOOP_DEVICE"
+else
+    report_progress 0 "Starting flashing balenaOS on internal media"
+    dd_with_progress "$BALENA_IMAGE" "$internal_dev" 0 "$IMAGE_FILE_SIZE"
+fi
+
+sync
+
+# Trigger udev
+partprobe "$internal_dev"
+udevadm trigger
+udevadm settle
+
+# Flash bootloader(s)
+if [ -n "$BOOTLOADER_FLASH_DEVICE" ]; then
+    if [ -n "$BOOTLOADER_IMAGE" ] && [ -n "$BOOTLOADER_BLOCK_SIZE_OFFSET" ]; then
+        dd if="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BOOTLOADER_IMAGE}" of="/dev/${BOOTLOADER_FLASH_DEVICE}" bs="${BOOTLOADER_BLOCK_SIZE_OFFSET}" seek="${BOOTLOADER_SKIP_OUTPUT_BLOCKS}"
+        info "Flashed ${BOOTLOADER_IMAGE} to internal flash"
+    else
+        fail "BOOTLOADER_IMAGE and/or BOOTLOADER_BLOCK_SIZE_OFFSET are not set."
+    fi
+else
+    info "No need to flash first stage bootloader to a specific device."
+fi
+
+if [ -n "$BOOTLOADER_FLASH_DEVICE_1" ]; then
+    if [ -n "$BOOTLOADER_IMAGE_1" ] && [ -n "$BOOTLOADER_BLOCK_SIZE_OFFSET_1" ]; then
+        dd if="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BOOTLOADER_IMAGE_1}" of="/dev/${BOOTLOADER_FLASH_DEVICE_1}" bs="${BOOTLOADER_BLOCK_SIZE_OFFSET_1}" seek="${BOOTLOADER_SKIP_OUTPUT_BLOCKS_1}"
+        info "Flashed ${BOOTLOADER_IMAGE_1} to internal flash"
+    else
+        fail "BOOTLOADER_IMAGE_1 and/or BOOTLOADER_BLOCK_SIZE_OFFSET_1 are not set."
+    fi
+else
+    info "No need to flash second stage bootloader to a specific device."
+fi
+
+# Mount internal device boot partition
+mkdir -p $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT
+info "Mounting internal device boot partition."
+
+# Wait for the devices to be detected for a while
+timeout 10 bash -c 'until test -L /dev/disk/by-label/resin-boot; do sleep 1; done'
+BOOT_MOUNT=$(get_dev_path_in_device_with_label "${internal_dev}" resin-boot)
+if [ -n "${BOOT_MOUNT}" ]; then
+    if ! mount "${BOOT_MOUNT}"  "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}"; then
+        fail "Failed to mount disk labeled as 'resin-boot'."
+    fi
+else
+    fail "Internal boot partition (resin-boot) not found in ${internal_dev}"
+fi
+
+if [ "$LUKS" = "1" ]; then
+    # Split EFI and boot partitions
+
+    # We want to keep the paths identical with the devices that do not have
+    # the split. On the newly provisioned OS the efi and boot partitions will
+    # be mounted under /mnt/efi and /mnt/boot respectively, but OS tools
+    # expect everything to be under /mnt/boot. Symlink /mnt/boot/EFI to
+    # ../efi/EFI so that /mnt/boot/EFI/ points to the correct directory.
+    EFI_MOUNT_DIR="$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/../efi"
+    mkdir -p "$EFI_MOUNT_DIR"
+    EFI_MOUNT=$(get_dev_path_in_device_with_label "${internal_dev}" balena-efi)
+    if ! mount "${EFI_MOUNT}" "$EFI_MOUNT_DIR"; then
+        fail "Failed to mount disk labeled as 'balena-efi'."
+    fi
+
+    ln -s "../efi/EFI" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/EFI"
+
+    # Move all non-EFI files to boot partition
+    # Only keep /EFI directory on the efi partition, everything else
+    # e.g. config.json, system-connections etc. goes to the encrypted
+    # boot partition
+    for FILE in "$EFI_MOUNT_DIR/"*; do
+        if [ "$FILE" = "$EFI_MOUNT_DIR/EFI" ]; then
+            continue
+        fi
+
+        mv "$FILE" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/"
+    done
+
+    # At this point the efi partition should only have the /EFI directory,
+    # let's add the rest of the files necessary to boot and unlock the partitions
+
+    # Store files necessary for TPM decryption to the EFI partitions
+    mv "$TPM_RESULT_DIR/persistent.ctx" "$EFI_MOUNT_DIR/balena-luks.ctx" && sync
+    mv "$TPM_RESULT_DIR/passphrase.enc" "$EFI_MOUNT_DIR/balena-luks.enc" && sync
+
+    rm -rf "$TPM_RESULT_DIR"
+
+    # Emulate a stage2 bootloader
+    # At this point just copy the flasher kernel to EFI partition
+    # TODO: Remove or replace by a proper stage2 bootloader when that is ready
+    find / -xdev -type f -name "bzImage*" -exec cp -a {} "${EFI_MOUNT_DIR}" +
+
+    # We have a separate grub.cfg for encrypted devices, use it
+    if [ -f "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG_LUKS" ]; then
+        INTERNAL_DEVICE_BOOTLOADER_CONFIG="$INTERNAL_DEVICE_BOOTLOADER_CONFIG_LUKS"
+    fi
+fi
+
+# Copy custom splash dir
+if [ -d "${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BALENA_SPLASH_CONFIG}" ]; then
+    mkdir -p "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$BALENA_SPLASH_CONFIG"
+    cp -r $EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$BALENA_SPLASH_CONFIG/* $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$BALENA_SPLASH_CONFIG
+fi
+# Copy Network Manager connection files
+_nm_config="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BALENA_NM_CONFIG}"
+if [ -d "${_nm_config}" ]; then
+    info "Transferring system connections on the internal device."
+    rm -rf "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BALENA_NM_CONFIG}/"
+    cp -rvf "${_nm_config}" "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}"
+else
+    info "No system connections found to transfer on the internal device."
+fi
+# Copy proxy configuration files
+_proxy_config="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BALENA_PROXY_CONFIG}"
+if [ -d "${_proxy_config}" ]; then
+    info "Transferring proxy configuration on the internal device."
+    rm -rf "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BALENA_PROXY_CONFIG}"
+    cp -rvf "${_proxy_config}" "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}"
+else
+    info "No proxy configuration found to transfer on the internal device."
+fi
+# Copy bootloader config file
+if [ -n "${INTERNAL_DEVICE_BOOTLOADER_CONFIG}" ] && [ -f "${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${INTERNAL_DEVICE_BOOTLOADER_CONFIG}" ]; then
+        if [[ -z "${INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH}" ]]; then
+            fail "INTERNAL_DEVICE_BOOTLOADER_CONFIG needs INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH to be set."
+        fi
+
+        cp "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH"
+        if [ -f "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG.sig" ]; then
+            cp "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG.sig" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH.sig"
+        fi
+
+        if [ -n "${INTERNAL_DEVICE_BOOTLOADER_LEGACY_CONFIG_PATH}" ]; then
+            cp "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_LEGACY_CONFIG_PATH"
+        fi
+fi
+
+# Copy resinOS bootloader config file
+if [ -f "${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BALENA_BOOTLOADER_CONFIG}" ]; then
+        cp $EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$BALENA_BOOTLOADER_CONFIG $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT
+fi
+
+# Put the GRUB EFI binary in place or remove it when applicable
+if [ "${EFI}" = "1" ]; then
+    INTERNAL_BOOTLOADER_DIR=$(dirname "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH}")
+    for EFI_BINARY in "${INTERNAL_BOOTLOADER_DIR}/"*.efi; do
+        if [ "${EFI_BINARY}" = "${INTERNAL_BOOTLOADER_DIR}/*.efi" ]; then
+            # Nothing matched the glob
+            break
+        fi
+
+        EFI_BINARY_SECUREBOOT="${EFI_BINARY}.secureboot"
+        if [ "${LUKS}" = "1" ]; then
+            # If this fails it is a fatal error - the secure boot variant
+            # must be in place when LUKS is enabled
+            mv "${EFI_BINARY_SECUREBOOT}" "${EFI_BINARY}"
+        else
+            # This can safely fail if the secure boot variant does not exist
+            rm -f "${EFI_BINARY_SECUREBOOT}" || :
+        fi
+    done
+fi
+
+# Give a chance for the device to register
+STARTTIME=$(date +%s)
+ENDTIME="$STARTTIME"
+TIMEOUT=10
+if command -v "systemctl"; then
+    while [ "$(systemctl is-active resin-device-register.service)" != "active" ]
+    do
+        if [ $((ENDTIME - STARTTIME)) -le $TIMEOUT ]; then
+            sleep 1 && ENDTIME=$((ENDTIME + 1))
+        else
+            info "Timeout while waiting for register to finish. No network?"
+            break
+        fi
+    done
+fi
+
+# Copy json configuration file from external (flasher) to the internal
+# (booting) device, sans installer section
+jq 'del(.installer)' "${CONFIG_PATH}" \
+    > "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/$(basename "${CONFIG_PATH}")"
+
+if [ "$LUKS" = "1" ]; then
+    umount "$EFI_MOUNT_DIR"
+fi
+
+info "Board specific flash procedure..."
+/usr/bin/resin-init-flasher-board
+
+info "Log end"
+# Preserve logs when running from initramfs
+if [ -n "${INITRAMFS_LOGFILE}" ] && [ -f "${INITRAMFS_LOGFILE}" ]; then
+    cp -fv "${INITRAMFS_LOGFILE}" "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/migration_$(date +"%Y%m%dT%H%M")"
+fi
+
+umount $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT
+
+sync
+
+EFIPART_LABEL="resin-boot"
+if [ "$EFI" = "1" ]; then
+    if [ "$LUKS" = "1" ]; then
+        EFIPART_LABEL=balena-efi
+    fi
+
+    # remove duplicate entries
+    # this will also remove the temporary secure boot installer entry
+    for label in resinOS "${BOOT_ENTRY_LABEL}"; do
+        duplicates="$(efibootmgr | grep "${label}" | sed -e "s/^Boot\([0-9a-fA-F]*\).*$/\1/")"
+        for entry in ${duplicates}; do
+            efibootmgr -B -b "${entry}"
+        done
+    done
+
+    efibootmgr --create \
+               --disk "/dev/$(lsblk -ndo pkname "$(get_dev_path_in_device_with_label ${internal_dev} ${EFIPART_LABEL})")" \
+               --part "$(get_part_number_by_label "${internal_dev#/dev/}" "${EFIPART_LABEL}")" \
+               --label "${BOOT_ENTRY_LABEL}" \
+               --loader "${LOADER_PATH}"
+fi
+
+if [ "$LUKS" = "1" ]; then
+    for PART_NAME in resin-boot resin-rootA resin-rootB resin-state resin-data; do
+        cryptsetup luksClose "$PART_NAME"
+    done
+fi
+
+# If in initramfs recovery mode, wait for adbd to finish
+if [ -n "${ADBD_PID}" ]; then
+    # adbd is not a child process so cannot wait
+    while kill -0  "${ADBD_PID}" 2>/dev/null; do sleep 1; done
+fi
+
+report_progress 100 "Post-Provisioning"
+
+# After migration we want to reboot as the remote device might not be accesible otherwise
+# This is achieved because the shutdown command is not part of the initramfs
+if command -v shutdown; then
+    info "Shutting down ..."
+    shutdown -h now
+elif command -v reboot; then
+    info "Rebooting..."
+    reboot -f
+fi
+
+fail "Unable to shutdown or reboot"

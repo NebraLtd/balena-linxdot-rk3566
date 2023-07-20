@@ -1,0 +1,12 @@
+[Unit]
+Wants=time-sync-https-wait.target bind-var-lib-chrony.service
+After=time-sync-https-wait.target bind-var-lib-chrony.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10s
+ExecStart=
+ExecStart=/usr/bin/healthdog --healthcheck=/usr/libexec/chrony-healthcheck /usr/sbin/chronyd -d
+WatchdogSec=240
+NotifyAccess=all

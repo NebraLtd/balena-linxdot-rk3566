@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# Copyright 2018-2021 Balena Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -o errexit
+
+. /usr/sbin/balena-config-vars
+
+echo "Rollback: Parsing bootloader configuration"
+
+if [ ! -d "$BALENA_BOOT_MOUNTPOINT" ]; then
+        echo "Rollback: $BALENA_BOOT_MOUNTPOINT doesn't exist."
+        exit 1
+fi
+
+# Fetch bootloader variables into environment
+if [ -f "${BALENA_BOOT_MOUNTPOINT}/resinOS_uEnv.txt" ]; then
+	BOOTLOADER_FILE="${BALENA_BOOT_MOUNTPOINT}/resinOS_uEnv.txt"
+else
+	grub_env=$(find -L "${BALENA_BOOT_MOUNTPOINT}" -name grubenv)
+	if [ -f "${grub_env}" ]; then
+		BOOTLOADER_FILE="${grub_env}"
+	fi
+fi
+
+# Parse bootloader config file for key variables
+upgrade_available=`"${CAT}" "${BOOTLOADER_FILE}" |  grep "upgrade_available=" | cut -d'=' -f 2`
+resin_root_part=`"${CAT}" "${BOOTLOADER_FILE}" | grep "resin_root_part=" | cut -d'=' -f 2`
+
+if [ -z "${upgrade_available}" ]; then
+	echo "Rollback: Could not find upgrade_available variable in bootloader environment"
+	exit 1
+fi
+
+if [ -z "${resin_root_part}" ]; then
+	echo "Rollback: Could not find resin_root_part variable in bootloader environment"
+	exit 1
+fi
+
+# --uniq here because findmnt returns the same device twice because /mnt/sysroot/active
+# is bind-mounted over itself while running old hooks from the inactive partition
+current_part=$(findmnt --noheadings --canonicalize --uniq --output SOURCE /mnt/sysroot/active)
+type=$(lsblk -no TYPE "${current_part}")
+if [ "${type}" = "crypt" ]; then
+    blockdev=$(lsblk -sJ "${current_part}" | jq -r '.blockdevices[].children[].name')
+else
+    blockdev=$(lsblk -sJ "${current_part}" | jq -r '.blockdevices[].name')
+fi
+current_part_idx=$(cat "/sys/class/block/$blockdev/partition")
+
+# Partition numbers are in hex.
+current_part_idx=$(printf "%x" $current_part_idx)
