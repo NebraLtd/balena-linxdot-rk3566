@@ -1,9 +1,0 @@
-[Unit]
-Description=Periodic vacuum of journald logs
-
-[Timer]
-OnCalendar=daily
-Persistent=true
-
-[Install]
-WantedBy=multi-user.target

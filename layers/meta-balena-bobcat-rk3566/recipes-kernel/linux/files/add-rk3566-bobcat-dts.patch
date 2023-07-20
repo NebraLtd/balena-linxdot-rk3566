@@ -1,7 +1,7 @@
 diff -uNr kernel-f39b590-orig/arch/arm64/boot/dts/rockchip/rk3566-bobcat.dts kernel-f39b590-patched/arch/arm64/boot/dts/rockchip/rk3566-bobcat.dts
 --- kernel-f39b590-orig/arch/arm64/boot/dts/rockchip/rk3566-bobcat.dts	1970-01-01 02:00:00.000000000 +0200
 +++ kernel-f39b590-patched/arch/arm64/boot/dts/rockchip/rk3566-bobcat.dts	2023-07-20 10:25:47.218974187 +0300
-@@ -0,0 +1,5478 @@
+@@ -0,0 +1,5474 @@
 +/dts-v1/;
 +
 +/ {
@@ -1572,6 +1572,7 @@ diff -uNr kernel-f39b590-orig/arch/arm64/boot/dts/rockchip/rk3566-bobcat.dts ker
 +				reg = <0x06>;
 +				clocks = <0x1f 0x27 0x1f 0x25 0x1f 0x26>;
 +				pm_qos = <0x45>;
++               status = "disabled";
 +			};
 +
 +			pd_gpu@7 {
@@ -5005,11 +5006,6 @@ diff -uNr kernel-f39b590-orig/arch/arm64/boot/dts/rockchip/rk3566-bobcat.dts ker
 +		regulator-min-microvolt = <0x4c4b40>;
 +		regulator-max-microvolt = <0x4c4b40>;
 +		phandle = <0x1b6>;
-+	};
-+
-+	chosen {
-+		bootargs = "earlycon=uart8250,mmio32,0xfe660000 console=ttyFIQ0 root=PARTUUID=614e0000-0000 rw rootwait";
-+		phandle = <0x1b7>;
 +	};
 +
 +	fiq-debugger {

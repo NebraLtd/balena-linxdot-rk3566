@@ -1,1 +1,1 @@
-PACKAGE_INSTALL:remove:bobcat-px30 = " initramfs-module-recovery initramfs-module-migrate"
+PACKAGE_INSTALL:remove:bobcat-rk3566 = " initramfs-module-recovery initramfs-module-migrate"

@@ -6,9 +6,12 @@ require linux-rockchip.inc
 
 inherit local-git
 
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+
 SRCREV = "f39b590ea11da2d897644e42119ba5099b2eefc8"
 SRC_URI = " \
-	https://github.com/rockchip-linux/kernel.git \
+	git://github.com/rockchip-linux/kernel.git;branch=develop-4.19; \
 	file://${THISDIR}/files/add-rk3566-bobcat-dts.patch \
 	file://${THISDIR}/files/add-defconfig.patch \
 "

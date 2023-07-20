@@ -1,3 +1,0 @@
-[submodule "tests/leviathan"]
-	path = tests/leviathan
-	url = https://github.com/balena-os/leviathan.git

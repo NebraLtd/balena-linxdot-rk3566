@@ -2,14 +2,13 @@ inherit deploy
 
 DESCRIPTION = "Rockchip binary tools (including WiFi/BT firmware)"
 
-LICENSE = "BINARY"
-LIC_FILES_CHKSUM = "file://LICENSE.TXT;md5=564e729dd65db6f65f911ce0cd340cf9"
-NO_GENERIC_LICENSE[BINARY] = "LICENSE.TXT"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
 SRC_URI = " \
-    git://github.com/armbian/rkbin.git;protocol=https \
+    git://github.com/rockchip-linux/rkbin.git;protocol=https \
 "
-SRCREV = "16291d03c813ad0be83737c6f835919b3cd4fcf3"
+SRCREV = "d6ccfe401ca84a98ca3b85c12b9554a1a43a166c"
 
 S = "${WORKDIR}/git"
 
@@ -23,8 +22,8 @@ do_deploy () {
     install -d ${DEPLOYDIR}/rkbin
     install -d ${DEPLOYDIR}/rkbin/tools
     install -m 755 ${S}/tools/mkimage ${DEPLOYDIR}/rkbin/tools
-    install -m 755 ${S}/rk35/rk3566_ddr_1056MHz_v1.10.bin ${DEPLOYDIR}/rkbin
-    install -m 755 ${S}/rk35/rk3568_bl31_v1.32.elf ${DEPLOYDIR}/rkbin
+    install -m 755 ${S}/bin/rk35/rk3566_ddr_1056MHz_v1.16.bin ${DEPLOYDIR}/rkbin
+    install -m 755 ${S}/bin/rk35/rk3568_bl31_v1.42.elf ${DEPLOYDIR}/rkbin
 }
 
 addtask deploy before do_build after do_compile
