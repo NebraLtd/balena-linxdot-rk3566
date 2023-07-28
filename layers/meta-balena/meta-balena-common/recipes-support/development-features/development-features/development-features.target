@@ -1,5 +1,0 @@
-[Unit]
-Description=Development features
-
-[Install]
-WantedBy=multi-user.target
