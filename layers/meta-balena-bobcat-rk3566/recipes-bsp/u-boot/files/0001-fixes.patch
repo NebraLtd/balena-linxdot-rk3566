@@ -1,24 +1,6 @@
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/configs/rk3568_defconfig rockchip_rk3568_uboot.patched/configs/rk3568_defconfig
---- rockchip_rk3568_uboot.orig/configs/rk3568_defconfig	2023-07-27 12:56:17.379507278 +0300
-+++ rockchip_rk3568_uboot.patched/configs/rk3568_defconfig	2023-07-26 23:56:08.128201642 +0300
-@@ -16,7 +16,7 @@
- CONFIG_SPL_NAND_SUPPORT=y
- CONFIG_SPL_SPI_FLASH_SUPPORT=y
- CONFIG_SPL_SPI_SUPPORT=y
--CONFIG_DEFAULT_DEVICE_TREE="rk3568-evb"
-+CONFIG_DEFAULT_DEVICE_TREE="rk3566-firefly"
- CONFIG_DEBUG_UART=y
- CONFIG_FIT=y
- CONFIG_FIT_IMAGE_POST_PROCESS=y
-@@ -25,7 +25,7 @@
- CONFIG_SPL_FIT_IMAGE_POST_PROCESS=y
- CONFIG_SPL_FIT_HW_CRYPTO=y
- # CONFIG_SPL_SYS_DCACHE_OFF is not set
--CONFIG_BOOTDELAY=3
-+CONFIG_BOOTDELAY=0
- CONFIG_SYS_CONSOLE_INFO_QUIET=y
- # CONFIG_DISPLAY_CPUINFO is not set
- CONFIG_ANDROID_BOOTLOADER=y
+--- rockchip_rk3568_uboot.orig/configs/rk3568_defconfig	2023-07-28 13:34:04.159034706 +0300
++++ rockchip_rk3568_uboot.patched/configs/rk3568_defconfig	2023-07-28 13:47:59.081141642 +0300
 @@ -70,7 +70,7 @@
  CONFIG_CMD_USB=y
  CONFIG_CMD_USB_MASS_STORAGE=y
@@ -28,16 +10,19 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/configs/rk3568_defconfig r
  CONFIG_CMD_TFTPPUT=y
  CONFIG_CMD_TFTP_BOOTM=y
  CONFIG_CMD_TFTP_FLASH=y
-@@ -220,3 +220,6 @@
- CONFIG_CMD_GPIO=y
- CONFIG_LED=y
- CONFIG_LED_GPIO=y
+@@ -218,3 +218,9 @@
+ CONFIG_OPTEE_CLIENT=y
+ CONFIG_OPTEE_V2=y
+ CONFIG_OPTEE_ALWAYS_USE_SECURITY_PARTITION=y
++CONFIG_CMD_GPIO=y
++CONFIG_LED=y
++CONFIG_LED_GPIO=y
 +CONFIG_CMD_FS_UUID=y
 +CONFIG_SPL_FIT_IMAGE_KB=2176
 +CONFIG_CMD_PMIC=y
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/drivers/power/pmic/rk8xx.c rockchip_rk3568_uboot.patched/drivers/power/pmic/rk8xx.c
 --- rockchip_rk3568_uboot.orig/drivers/power/pmic/rk8xx.c	2023-07-27 12:56:17.379507278 +0300
-+++ rockchip_rk3568_uboot.patched/drivers/power/pmic/rk8xx.c	2023-07-26 21:13:49.743969417 +0300
++++ rockchip_rk3568_uboot.patched/drivers/power/pmic/rk8xx.c	2023-07-28 13:35:28.578297554 +0300
 @@ -383,11 +383,11 @@
  		return ret;
  	}
@@ -54,7 +39,7 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/drivers/power/pmic/rk8xx.c
  	if (val <= 6)
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/config_resin.h rockchip_rk3568_uboot.patched/include/config_resin.h
 --- rockchip_rk3568_uboot.orig/include/config_resin.h	1970-01-01 02:00:00.000000000 +0200
-+++ rockchip_rk3568_uboot.patched/include/config_resin.h	2023-07-26 21:14:16.073675016 +0300
++++ rockchip_rk3568_uboot.patched/include/config_resin.h	2023-07-28 13:35:28.578297554 +0300
 @@ -0,0 +1,15 @@
 +#define BALENA_UBOOT_DEVICES 0 1 2
 +#define BALENA_UBOOT_DEVICE_TYPES mmc
@@ -72,42 +57,20 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/config_resin.h roc
 +#define CONFIG_BOOT_RETRY_TIME 15
 +#define CONFIG_CMD_FS_UUID 1
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/configs/rk3568_common.h rockchip_rk3568_uboot.patched/include/configs/rk3568_common.h
---- rockchip_rk3568_uboot.orig/include/configs/rk3568_common.h	2023-07-27 12:56:17.379507278 +0300
-+++ rockchip_rk3568_uboot.patched/include/configs/rk3568_common.h	2023-07-26 21:39:59.610446405 +0300
-@@ -89,29 +89,6 @@
+--- rockchip_rk3568_uboot.orig/include/configs/rk3568_common.h	2023-07-28 13:34:04.179034532 +0300
++++ rockchip_rk3568_uboot.patched/include/configs/rk3568_common.h	2023-07-28 13:36:46.940945988 +0300
+@@ -88,6 +88,7 @@
+ 	ROCKCHIP_DEVICE_SETTINGS \
  	RKIMG_DET_BOOTDEV \
  	BOOTENV
- 
--#undef RKIMG_BOOTCOMMAND
--#ifdef CONFIG_ROCKCHIP_ANDROID_BOOT_FIRST
--#define RKIMG_BOOTCOMMAND		\
--	"gpio clear 014;" \
--	"setenv bootargs_orig \"${bootargs}\";" \
--	"setenv bootargs \"${bootargs_orig} root=/dev/mmcblk1p2\";" \
--	"run bootcmd_mmc1;" \
--	"setenv bootargs \"${bootargs_orig}\";" \
--	"setenv devnum 0;" \
--	"mmc dev ${devnum};" \
--	"boot_android mmc ${devnum};" \
--	"run distro_bootcmd;"
--#else
--#define RKIMG_BOOTCOMMAND		\
--	"gpio clear 014;" \
--	"setenv bootargs_orig \"${bootargs}\";" \
--	"setenv bootargs \"${bootargs_orig} root=/dev/mmcblk1p2\";" \
--	"run bootcmd_mmc1;" \
--	"setenv bootargs \"${bootargs_orig} root=/dev/mmcblk0p6\";" \
--        "boot_fit;" \
--	"run distro_bootcmd;"
--#endif
--
++
  #endif
  
  /* rockchip ohci host driver */
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/configs/rockchip-common.h rockchip_rk3568_uboot.patched/include/configs/rockchip-common.h
---- rockchip_rk3568_uboot.orig/include/configs/rockchip-common.h	2023-07-27 12:56:17.379507278 +0300
-+++ rockchip_rk3568_uboot.patched/include/configs/rockchip-common.h	2023-07-26 21:13:03.304488885 +0300
-@@ -162,19 +162,14 @@
+--- rockchip_rk3568_uboot.orig/include/configs/rockchip-common.h	2023-07-28 13:34:04.179034532 +0300
++++ rockchip_rk3568_uboot.patched/include/configs/rockchip-common.h	2023-07-28 13:35:28.578297554 +0300
+@@ -135,19 +135,14 @@
  		"setenv devtype ramdisk; setenv devnum 0;" \
  	"fi; \0"
  
@@ -137,7 +100,7 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/configs/rockchip-c
  
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/env_default.h rockchip_rk3568_uboot.patched/include/env_default.h
 --- rockchip_rk3568_uboot.orig/include/env_default.h	2023-07-27 12:56:17.379507278 +0300
-+++ rockchip_rk3568_uboot.patched/include/env_default.h	2023-07-26 21:14:41.073395552 +0300
++++ rockchip_rk3568_uboot.patched/include/env_default.h	2023-07-28 13:35:28.578297554 +0300
 @@ -22,6 +22,8 @@
  #else
  const uchar default_environment[] = {
@@ -149,7 +112,7 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/env_default.h rock
  #endif
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/env_resin.h rockchip_rk3568_uboot.patched/include/env_resin.h
 --- rockchip_rk3568_uboot.orig/include/env_resin.h	1970-01-01 02:00:00.000000000 +0200
-+++ rockchip_rk3568_uboot.patched/include/env_resin.h	2023-07-26 21:14:59.976537468 +0300
++++ rockchip_rk3568_uboot.patched/include/env_resin.h	2023-07-28 13:35:28.578297554 +0300
 @@ -0,0 +1,179 @@
 +#ifndef HEADER_ENV_BALENA_H
 +#define HEADER_ENV_BALENA_H
@@ -332,7 +295,7 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/env_resin.h rockch
 +#endif /* HEADER_ENV_BALENA_H */
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/lib/avb/libavb/avb_slot_verify.c rockchip_rk3568_uboot.patched/lib/avb/libavb/avb_slot_verify.c
 --- rockchip_rk3568_uboot.orig/lib/avb/libavb/avb_slot_verify.c	2023-07-27 12:55:58.319625094 +0300
-+++ rockchip_rk3568_uboot.patched/lib/avb/libavb/avb_slot_verify.c	2023-07-28 00:01:40.829776291 +0300
++++ rockchip_rk3568_uboot.patched/lib/avb/libavb/avb_slot_verify.c	2023-07-28 13:35:28.578297554 +0300
 @@ -296,7 +296,7 @@
    bool image_preloaded = false;
    uint8_t* digest;
@@ -343,8 +306,8 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/lib/avb/libavb/avb_slot_ve
    size_t expected_digest_len = 0;
    uint8_t expected_digest_buf[AVB_SHA512_DIGEST_SIZE];
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/Makefile rockchip_rk3568_uboot.patched/Makefile
---- rockchip_rk3568_uboot.orig/Makefile	2023-07-27 12:55:57.472963623 +0300
-+++ rockchip_rk3568_uboot.patched/Makefile	2023-07-27 23:37:35.676816655 +0300
+--- rockchip_rk3568_uboot.orig/Makefile	2023-07-28 13:34:04.142368185 +0300
++++ rockchip_rk3568_uboot.patched/Makefile	2023-07-28 13:35:28.578297554 +0300
 @@ -254,7 +254,7 @@
  	  else if [ -x /bin/bash ]; then echo /bin/bash; \
  	  else echo sh; fi ; fi)
@@ -354,9 +317,18 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/Makefile rockchip_rk3568_u
  HOSTCXX      = c++
  HOSTCFLAGS   = -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer \
  		$(if $(CONFIG_TOOLS_DEBUG),-g)
+@@ -723,7 +723,7 @@
+ ifeq ($(CONFIG_USE_PRIVATE_LIBGCC),y)
+ PLATFORM_LIBGCC = arch/$(ARCH)/lib/lib.a
+ else
+-PLATFORM_LIBGCC := -L $(shell dirname `$(CC) $(c_flags) -print-libgcc-file-name`) -lgcc
++PLATFORM_LIBGCC := -L $(shell dirname `$(CC) $(TOOLCHAIN_OPTIONS) $(c_flags) -print-libgcc-file-name`) -lgcc
+ endif
+ PLATFORM_LIBS += $(PLATFORM_LIBGCC)
+ export PLATFORM_LIBS
 diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/make.sh rockchip_rk3568_uboot.patched/make.sh
---- rockchip_rk3568_uboot.orig/make.sh	2023-07-27 12:55:57.472963623 +0300
-+++ rockchip_rk3568_uboot.patched/make.sh	2023-07-28 11:56:14.682764244 +0300
+--- rockchip_rk3568_uboot.orig/make.sh	2023-07-28 13:34:04.182367836 +0300
++++ rockchip_rk3568_uboot.patched/make.sh	2023-07-28 13:35:28.578297554 +0300
 @@ -11,9 +11,10 @@
  CMD_ARGS=$1
  
@@ -369,7 +341,7 @@ diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/make.sh rockchip_rk3568_ub
  ########################################### User not touch #############################################
  # Declare global INI file searching index name for every chip, update in select_chip_info()
  RKCHIP=
-@@ -779,7 +780,7 @@
+@@ -759,7 +760,7 @@
  handle_args_late
  sub_commands
  clean_files

@@ -1,6 +1,6 @@
-diff -uNr kernel-f39b590-orig/arch/arm64/configs/rk3566_bobcat_defconfig kernel-f39b590-patched/arch/arm64/configs/rk3566_bobcat_defconfig
---- kernel-f39b590-orig/arch/arm64/configs/rk3566_bobcat_defconfig	1970-01-01 02:00:00.000000000 +0200
-+++ kernel-f39b590-patched/arch/arm64/configs/rk3566_bobcat_defconfig	2023-07-20 10:33:28.660072063 +0300
+diff -uNr kernel-f39b590-orig/arch/arm64/configs/bobcat_rk3566_defconfig kernel-f39b590-patched/arch/arm64/configs/bobcat_rk3566_defconfig
+--- kernel-f39b590-orig/arch/arm64/configs/bobcat_rk3566_defconfig	1970-01-01 02:00:00.000000000 +0200
++++ kernel-f39b590-patched/arch/arm64/configs/bobcat_rk3566_defconfig	2023-07-20 10:33:28.660072063 +0300
 @@ -0,0 +1,5607 @@
 +CONFIG_CC_IS_GCC=y
 +CONFIG_GCC_VERSION=60301

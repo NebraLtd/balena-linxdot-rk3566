@@ -16,7 +16,7 @@ SRC_URI = " \
 
 BB_STRICT_CHECKSUM = "0"
 
-SRCREV = "5bf6bf6307cb231bf7ff4e413d54f7cbdba8eb76"
+SRCREV = "dde42ec6a2c0d2cdb20ef366963a0b673bac9a94"
 
 inherit resin-u-boot
 
