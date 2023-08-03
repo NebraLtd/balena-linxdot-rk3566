@@ -13,6 +13,14 @@ diff -uNr '--exclude=arch' '--exclude=scripts' kernel-f39b590-orig/drivers/net/p
  config MICREL_PHY
  	tristate "Micrel PHYs"
  	---help---
+diff -uNr '--exclude=arch' '--exclude=scripts' kernel-f39b590-orig/drivers/net/phy/Makefile kernel-f39b590-patched/drivers/net/phy/Makefile
+--- kernel-f39b590-orig/drivers/net/phy/Makefile	2022-08-04 10:48:02.000000000 +0300
++++ kernel-f39b590-patched/drivers/net/phy/Makefile	2023-08-03 23:50:38.505539803 +0300
+@@ -86,3 +86,4 @@
+ obj-$(CONFIG_TERANETICS_PHY)	+= teranetics.o
+ obj-$(CONFIG_VITESSE_PHY)	+= vitesse.o
+ obj-$(CONFIG_XILINX_GMII2RGMII) += xilinx_gmii2rgmii.o
++obj-$(CONFIG_MOTORCOMM_PHY) += motorcom.o
 diff -uNr '--exclude=arch' '--exclude=scripts' kernel-f39b590-orig/drivers/net/phy/motorcomm.c kernel-f39b590-patched/drivers/net/phy/motorcomm.c
 --- kernel-f39b590-orig/drivers/net/phy/motorcomm.c	1970-01-01 02:00:00.000000000 +0200
 +++ kernel-f39b590-patched/drivers/net/phy/motorcomm.c	2023-07-30 12:46:35.739246021 +0300
