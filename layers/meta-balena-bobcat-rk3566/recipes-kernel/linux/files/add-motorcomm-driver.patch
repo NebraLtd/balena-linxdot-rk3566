@@ -20,7 +20,7 @@ diff -uNr '--exclude=arch' '--exclude=scripts' kernel-f39b590-orig/drivers/net/p
  obj-$(CONFIG_TERANETICS_PHY)	+= teranetics.o
  obj-$(CONFIG_VITESSE_PHY)	+= vitesse.o
  obj-$(CONFIG_XILINX_GMII2RGMII) += xilinx_gmii2rgmii.o
-+obj-$(CONFIG_MOTORCOMM_PHY) += motorcom.o
++obj-$(CONFIG_MOTORCOMM_PHY) += motorcomm.o
 diff -uNr '--exclude=arch' '--exclude=scripts' kernel-f39b590-orig/drivers/net/phy/motorcomm.c kernel-f39b590-patched/drivers/net/phy/motorcomm.c
 --- kernel-f39b590-orig/drivers/net/phy/motorcomm.c	1970-01-01 02:00:00.000000000 +0200
 +++ kernel-f39b590-patched/drivers/net/phy/motorcomm.c	2023-07-30 12:46:35.739246021 +0300
