@@ -1,0 +1,352 @@
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/configs/rk3568_defconfig rockchip_rk3568_uboot.patched/configs/rk3568_defconfig
+--- rockchip_rk3568_uboot.orig/configs/rk3568_defconfig	2023-07-28 13:34:04.159034706 +0300
++++ rockchip_rk3568_uboot.patched/configs/rk3568_defconfig	2023-07-28 13:47:59.081141642 +0300
+@@ -70,7 +70,7 @@
+ CONFIG_CMD_USB=y
+ CONFIG_CMD_USB_MASS_STORAGE=y
+ # CONFIG_CMD_ITEST is not set
+-# CONFIG_CMD_SETEXPR is not set
++CONFIG_CMD_SETEXPR=y
+ CONFIG_CMD_TFTPPUT=y
+ CONFIG_CMD_TFTP_BOOTM=y
+ CONFIG_CMD_TFTP_FLASH=y
+@@ -218,3 +218,9 @@
+ CONFIG_OPTEE_CLIENT=y
+ CONFIG_OPTEE_V2=y
+ CONFIG_OPTEE_ALWAYS_USE_SECURITY_PARTITION=y
++CONFIG_CMD_GPIO=y
++CONFIG_LED=y
++CONFIG_LED_GPIO=y
++CONFIG_CMD_FS_UUID=y
++CONFIG_SPL_FIT_IMAGE_KB=2176
++CONFIG_CMD_PMIC=y
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/drivers/power/pmic/rk8xx.c rockchip_rk3568_uboot.patched/drivers/power/pmic/rk8xx.c
+--- rockchip_rk3568_uboot.orig/drivers/power/pmic/rk8xx.c	2023-07-27 12:56:17.379507278 +0300
++++ rockchip_rk3568_uboot.patched/drivers/power/pmic/rk8xx.c	2023-07-28 13:35:28.578297554 +0300
+@@ -383,11 +383,11 @@
+ 		return ret;
+ 	}
+ 
+-	rk8xx->irq = phandle_gpio_to_irq(phandle, interrupt);
++	/*rk8xx->irq = phandle_gpio_to_irq(phandle, interrupt);
+ 	if (rk8xx->irq < 0) {
+ 		printf("Failed to request rk8xx irq, ret=%d\n", rk8xx->irq);
+ 		return rk8xx->irq;
+-	}
++	}*/
+ 
+ 	val = dev_read_u32_default(dev, "long-press-off-time-sec", 0);
+ 	if (val <= 6)
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/config_resin.h rockchip_rk3568_uboot.patched/include/config_resin.h
+--- rockchip_rk3568_uboot.orig/include/config_resin.h	1970-01-01 02:00:00.000000000 +0200
++++ rockchip_rk3568_uboot.patched/include/config_resin.h	2023-07-28 13:35:28.578297554 +0300
+@@ -0,0 +1,15 @@
++#define BALENA_UBOOT_DEVICES 0 1 2
++#define BALENA_UBOOT_DEVICE_TYPES mmc
++#define BALENA_BOOT_PART 1
++#define BALENA_DEFAULT_ROOT_PART 2
++#define BALENA_IMAGE_FLAG_FILE balena-image
++#define BALENA_FLASHER_FLAG_FILE balena-image-flasher
++#define BALENA_ENV_FILE resinOS_uEnv.txt
++#define BALENA_EXTRA_ENV_FILE extra_uEnv.txt
++#define BASE_OS_CMDLINE console=null quiet splash vt.global_cursor_default=0 consoleblank=0
++#define OS_BOOTCOUNT_FILE bootcount.env
++#define OS_BOOTCOUNT_SKIP 0
++#define OS_BOOTCOUNT_LIMIT 3
++#define CONFIG_RESET_TO_RETRY 1
++#define CONFIG_BOOT_RETRY_TIME 15
++#define CONFIG_CMD_FS_UUID 1
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/configs/rk3568_common.h rockchip_rk3568_uboot.patched/include/configs/rk3568_common.h
+--- rockchip_rk3568_uboot.orig/include/configs/rk3568_common.h	2023-07-28 13:34:04.179034532 +0300
++++ rockchip_rk3568_uboot.patched/include/configs/rk3568_common.h	2023-07-28 13:36:46.940945988 +0300
+@@ -88,6 +88,7 @@
+ 	ROCKCHIP_DEVICE_SETTINGS \
+ 	RKIMG_DET_BOOTDEV \
+ 	BOOTENV
++
+ #endif
+ 
+ /* rockchip ohci host driver */
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/configs/rockchip-common.h rockchip_rk3568_uboot.patched/include/configs/rockchip-common.h
+--- rockchip_rk3568_uboot.orig/include/configs/rockchip-common.h	2023-07-28 13:34:04.179034532 +0300
++++ rockchip_rk3568_uboot.patched/include/configs/rockchip-common.h	2023-07-28 13:35:28.578297554 +0300
+@@ -135,19 +135,14 @@
+ 		"setenv devtype ramdisk; setenv devnum 0;" \
+ 	"fi; \0"
+ 
+-#if defined(CONFIG_AVB_VBMETA_PUBLIC_KEY_VALIDATE)
+-#define RKIMG_BOOTCOMMAND			\
+-	"boot_android ${devtype} ${devnum};"
+-#elif defined(CONFIG_FIT_SIGNATURE)
+-#define RKIMG_BOOTCOMMAND			\
+-	"boot_fit;"
+-#else
+-#define RKIMG_BOOTCOMMAND			\
+-	"boot_android ${devtype} ${devnum};"	\
+-	"boot_fit;"				\
+-	"bootrkp;"				\
+-	"run distro_bootcmd;"
+-#endif
++#define RKIMG_BOOTCOMMAND \
++	"setenv resin_kernel_load_addr ${kernel_addr_r};" \
++	"run resin_set_kernel_root;" \
++	"run set_os_cmdline;" \
++	"setenv bootargs ${resin_kernel_root} rootwait console=ttyFIQ0,1500000 console=ttyFIQ0  ${os_cmdline} panic=10 loglevel=7;" \
++	"load mmc ${resin_dev_index}:${resin_root_part} ${kernel_addr_r} /boot/Image;" \
++	"load mmc ${resin_dev_index}:${resin_root_part} ${fdt_addr_r} /boot/rk3566-linxdot.dtb;" \
++	"booti ${kernel_addr_r} - ${fdt_addr_r}"
+ 
+ #endif /* CONFIG_SPL_BUILD */
+ 
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/env_default.h rockchip_rk3568_uboot.patched/include/env_default.h
+--- rockchip_rk3568_uboot.orig/include/env_default.h	2023-07-27 12:56:17.379507278 +0300
++++ rockchip_rk3568_uboot.patched/include/env_default.h	2023-07-28 13:35:28.578297554 +0300
+@@ -22,6 +22,8 @@
+ #else
+ const uchar default_environment[] = {
+ #endif
++#include <env_resin.h>
++        BALENA_ENV
+ #ifdef	CONFIG_ENV_CALLBACK_LIST_DEFAULT
+ 	ENV_CALLBACK_VAR "=" CONFIG_ENV_CALLBACK_LIST_DEFAULT "\0"
+ #endif
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/include/env_resin.h rockchip_rk3568_uboot.patched/include/env_resin.h
+--- rockchip_rk3568_uboot.orig/include/env_resin.h	1970-01-01 02:00:00.000000000 +0200
++++ rockchip_rk3568_uboot.patched/include/env_resin.h	2023-07-28 13:35:28.578297554 +0300
+@@ -0,0 +1,179 @@
++#ifndef HEADER_ENV_BALENA_H
++#define HEADER_ENV_BALENA_H
++
++/*
++ * Assumes defined:
++ *     resin_kernel_load_addr - kernel load address as we use the same
++ *                              to load the env file
++ *     resin_root_part        - existing in the env file to import (optional)
++ *     resin_flasher_skip     - if set to 1 by integration layer, skips flasher detection (optional)
++ * Defines:
++ *     resin_set_kernel_root  - needs to be integrated with board
++ *                              specific configuration
++ *     set_os_cmdline         - Sets cmdline parameters as required by the OS
++ *                              in os_cmdline env variable.
++ *                              Needs to be integrated with board specific
++ *                              configuration so that os_cmdline is part of the
++ *                              final cmdline/bootargs passed to the kernel.
++ *                              This needs to run after resin_set_kernel_root
++ *                              as it can use the device scan which is
++ *                              performed in resin_set_kernel_root. Otherwise
++ *                              an additional scan is needed.
++ *     resin_kernel_root      - the root kernel argument
++ *     resin_dev_type         - device type from where we boot (e.g. mmc, usb etc.)
++ *     resin_dev_index        - device index to be used at boot
++ * Other notes:
++ *     os_bc_wr_sz            - The exact size of 'bootcount=X' to fatwrite
++ *
++ */
++
++#include <config_resin.h>
++
++#define BALENA_ENV \
++       "resin_env_file=" __stringify(BALENA_ENV_FILE) "\0" \
++       "balena_extra_env_file=" __stringify(BALENA_EXTRA_ENV_FILE) "\0" \
++       "os_bc_file=" __stringify(OS_BOOTCOUNT_FILE) "\0" \
++       "os_bc_skip=" __stringify(OS_BOOTCOUNT_SKIP) "\0" \
++       "os_bc_inced=0 \0" \
++       "os_bc_lim=" __stringify(OS_BOOTCOUNT_LIMIT) "\0" \
++       "os_bc_wr_sz=0xd \0" \
++       "upgrade_available=0 \0" \
++       "resin_flasher_flag_file=" __stringify(BALENA_FLASHER_FLAG_FILE) "\0" \
++       "resin_image_flag_file=" __stringify(BALENA_IMAGE_FLAG_FILE) "\0" \
++       "resin_uboot_devices=" __stringify(BALENA_UBOOT_DEVICES) "\0" \
++       "resin_uboot_device_types=" __stringify(BALENA_UBOOT_DEVICE_TYPES) "\0" \
++       "resin_boot_part=" __stringify(BALENA_BOOT_PART) "\0" \
++       "resin_root_part=" __stringify(BALENA_DEFAULT_ROOT_PART) "\0" \
++       "base_os_cmdline=" __stringify(BASE_OS_CMDLINE) "\0" \
++       "resin_flasher_skip=0 \0" \
++       \
++       "resin_find_root_part_uuid=" \
++               "fsuuid ${resin_dev_type} ${resin_dev_index}:${resin_root_part} resin_root_part_uuid\0" \
++       \
++       "resin_load_env_file=" \
++               "echo Loading ${resin_env_file} from ${resin_dev_type} device ${resin_dev_index} partition ${resin_boot_part};" \
++               "fatload ${resin_dev_type} ${resin_dev_index}:${resin_boot_part} ${resin_kernel_load_addr} ${resin_env_file};\0" \
++       "balena_load_extra_env_file=" \
++               "echo Loading ${balena_extra_env_file} from ${resin_dev_type} device ${resin_dev_index} partition ${resin_boot_part};" \
++               "fatload ${resin_dev_type} ${resin_dev_index}:${resin_boot_part} ${resin_kernel_load_addr} ${balena_extra_env_file};\0" \
++       "os_load_bootcount_file=" \
++               "echo Loading ${os_bc_file} from ${resin_dev_type} device ${resin_dev_index} partition ${resin_boot_part};" \
++               "fatload ${resin_dev_type} ${resin_dev_index}:${resin_boot_part} ${resin_kernel_load_addr} ${os_bc_file};\0" \
++       \
++       "resin_import_env_file=" \
++               "echo Import ${resin_env_file} in environment;" \
++               "env import -t ${resin_kernel_load_addr} ${filesize}\0" \
++       \
++       "balena_import_extra_env_file=" \
++               "echo Import ${balena_extra_env_file} in environment;" \
++               "env import -t ${resin_kernel_load_addr} ${filesize}\0" \
++       \
++       "balena_import_scan_dev_extra_env_file=" \
++               "if fatload ${resin_scan_dev_type} ${resin_scan_dev_index}:${resin_boot_part} ${resin_kernel_load_addr} ${balena_extra_env_file}; then " \
++                   "run balena_import_extra_env_file; " \
++                   "echo Imported ${balena_extra_env_file} from scanned device ${resin_scan_dev_type}:${resin_scan_dev_index} in environment;" \
++               "else " \
++                   "echo File ${balena_extra_env_file} not found on scanned device ${resin_scan_dev_type}:${resin_scan_dev_index}; " \
++               "fi; \0" \
++       "os_import_bootcount_file=" \
++               "echo Import ${os_bc_file} in environment;" \
++               "env import -t ${resin_kernel_load_addr} ${filesize}\0" \
++       \
++       "os_inc_bc_save=" \
++              "if test ${os_bc_skip} = 0 && test ${os_bc_inced} = 0 && test ${upgrade_available} = 1; then " \
++                     "setexpr bootcount ${bootcount} + 1;" \
++                     "env set os_bc_inced 1;" \
++                     "echo bootcount=${bootcount} now;" \
++                     "env export -t ${resin_kernel_load_addr} bootcount;" \
++                     "if fatwrite ${resin_dev_type} ${resin_dev_index}:${resin_boot_part} ${resin_kernel_load_addr} ${os_bc_file} ${os_bc_wr_sz}; then; else; echo FATWRITE FAILED ; fi;" \
++                     "echo bootcount=${bootcount} written to ${resin_dev_type} ${resin_dev_index}:${resin_boot_part} ${os_bc_file};" \
++              "fi;\0" \
++       \
++       "resin_flasher_detect=" \
++               "if test \"${resin_scan_dev_type}\" = usb ; then " \
++	               "usb start ; " \
++               "fi; " \
++               "fatload ${resin_scan_dev_type} ${resin_scan_dev_index}:${resin_boot_part} ${resin_kernel_load_addr} ${resin_flasher_flag_file};\0" \
++       \
++       "resin_image_detect=" \
++               "if test \"${resin_scan_dev_type}\" = usb ; then " \
++                       "usb start ; " \
++               "fi; " \
++               "fatload ${resin_scan_dev_type} ${resin_scan_dev_index}:${resin_boot_part} ${resin_kernel_load_addr} ${resin_image_flag_file};\0" \
++       \
++       "resin_scan_devs=" \
++               "echo Scanning ${resin_uboot_device_types} devices ${resin_uboot_devices}; " \
++               "for resin_scan_dev_type in ${resin_uboot_device_types}; do " \
++                       "for resin_scan_dev_index in ${resin_uboot_devices}; do " \
++                               "run balena_import_scan_dev_extra_env_file; " \
++                               "if test ${resin_flasher_skip} = 0 && run resin_flasher_detect; then " \
++                                       "setenv resin_flasher_dev_index ${resin_scan_dev_index}; " \
++                                       "setenv resin_dev_type ${resin_scan_dev_type}; " \
++                                       "exit; " \
++                               "else; " \
++                                       "if test -n \"${resin_image_dev_index}\"; then ;" \
++                                               "else if run resin_image_detect; then " \
++                                                       "setenv resin_image_dev_index ${resin_scan_dev_index}; " \
++                                                       "setenv resin_dev_type ${resin_scan_dev_type}; " \
++                                               "fi; " \
++                                       "fi; " \
++                               "fi; " \
++                       "done;" \
++               "done;\0"  \
++       \
++       "resin_set_dev_index=" \
++               "run resin_scan_devs; " \
++               "if test -n ${resin_flasher_dev_index}; then " \
++                       "echo Found resin flasher on ${resin_dev_type} ${resin_flasher_dev_index}; "\
++                       "setenv bootparam_flasher flasher; "\
++                       "setenv resin_dev_index ${resin_flasher_dev_index}; "\
++               "else; "\
++                       "if test -n \"${resin_image_dev_index}\"; then " \
++                               "echo Found resin image on ${resin_dev_type} ${resin_image_dev_index}; "\
++                               "setenv resin_dev_index ${resin_image_dev_index}; "\
++                       "else; " \
++                               "echo ERROR: Could not find a resin image of any sort.; " \
++                       "fi; " \
++               "fi;\0" \
++       \
++       "resin_inject_env_file=" \
++               "if run resin_load_env_file; then " \
++                       "run resin_import_env_file;" \
++               "fi;" \
++               "if run balena_load_extra_env_file; then " \
++                       "run balena_import_extra_env_file;" \
++               "fi;" \
++               "if run os_load_bootcount_file; then " \
++                       "run os_import_bootcount_file;" \
++               "else; " \
++                       "echo No bootcount.env file. Setting bootcount=0 in environment;" \
++                       "env set bootcount 0;" \
++               "fi;\0" \
++       \
++       "resin_check_altroot=" \
++              "setexpr resin_roota ${resin_boot_part} + 1; " \
++              "setexpr resin_rootb ${resin_boot_part} + 2; " \
++              "run os_inc_bc_save;" \
++              "if test -n ${os_bc_lim}; then " \
++                      "if test ${bootcount} -gt ${os_bc_lim}; then " \
++                               "echo WARNING! BOOTLIMIT EXCEEDED. SWITCHING TO PREVIOUS ROOT;" \
++                               "echo WARNING! was: resin_root_part=${resin_root_part};" \
++                               "if test ${resin_root_part} = ${resin_roota}; then "\
++                                       "env set resin_root_part ${resin_rootb}; " \
++                               "else; "\
++                                       "env set resin_root_part ${resin_roota}; " \
++                               "fi;" \
++                               "echo WARNING! now: resin_root_part=${resin_root_part};" \
++                      "fi;" \
++              "fi;\0" \
++       \
++       "set_os_cmdline=" \
++               "setenv os_cmdline ${base_os_cmdline} ${bootparam_flasher} ${extra_os_cmdline};\0" \
++       "resin_set_kernel_root=" \
++               "run resin_set_dev_index;" \
++               "run resin_inject_env_file;" \
++               "run resin_check_altroot;" \
++               "run resin_find_root_part_uuid;" \
++               "setenv resin_kernel_root root=UUID=${resin_root_part_uuid}\0"
++
++#endif /* HEADER_ENV_BALENA_H */
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/lib/avb/libavb/avb_slot_verify.c rockchip_rk3568_uboot.patched/lib/avb/libavb/avb_slot_verify.c
+--- rockchip_rk3568_uboot.orig/lib/avb/libavb/avb_slot_verify.c	2023-07-27 12:55:58.319625094 +0300
++++ rockchip_rk3568_uboot.patched/lib/avb/libavb/avb_slot_verify.c	2023-07-28 13:35:28.578297554 +0300
+@@ -296,7 +296,7 @@
+   bool image_preloaded = false;
+   uint8_t* digest;
+   size_t digest_len;
+-  const char* found;
++  const char* found = NULL;
+   uint64_t image_size;
+   size_t expected_digest_len = 0;
+   uint8_t expected_digest_buf[AVB_SHA512_DIGEST_SIZE];
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/Makefile rockchip_rk3568_uboot.patched/Makefile
+--- rockchip_rk3568_uboot.orig/Makefile	2023-07-28 13:34:04.142368185 +0300
++++ rockchip_rk3568_uboot.patched/Makefile	2023-07-28 13:35:28.578297554 +0300
+@@ -254,7 +254,7 @@
+ 	  else if [ -x /bin/bash ]; then echo /bin/bash; \
+ 	  else echo sh; fi ; fi)
+ 
+-HOSTCC       = cc
++HOSTCC       = $(BUILD_CC) $(BUILD_CFLAGS) $(BUILD_LDFLAGS)
+ HOSTCXX      = c++
+ HOSTCFLAGS   = -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer \
+ 		$(if $(CONFIG_TOOLS_DEBUG),-g)
+@@ -723,7 +723,7 @@
+ ifeq ($(CONFIG_USE_PRIVATE_LIBGCC),y)
+ PLATFORM_LIBGCC = arch/$(ARCH)/lib/lib.a
+ else
+-PLATFORM_LIBGCC := -L $(shell dirname `$(CC) $(c_flags) -print-libgcc-file-name`) -lgcc
++PLATFORM_LIBGCC := -L $(shell dirname `$(CC) $(TOOLCHAIN_OPTIONS) $(c_flags) -print-libgcc-file-name`) -lgcc
+ endif
+ PLATFORM_LIBS += $(PLATFORM_LIBGCC)
+ export PLATFORM_LIBS
+diff -uNr '--exclude=.git' rockchip_rk3568_uboot.orig/make.sh rockchip_rk3568_uboot.patched/make.sh
+--- rockchip_rk3568_uboot.orig/make.sh	2023-07-28 13:34:04.182367836 +0300
++++ rockchip_rk3568_uboot.patched/make.sh	2023-07-28 13:35:28.578297554 +0300
+@@ -11,9 +11,10 @@
+ CMD_ARGS=$1
+ 
+ ########################################### User can modify #############################################
+-RKBIN_TOOLS=../rkbin/tools
++RKBIN_TOOLS="$(dirname $0)/../../../../armv8a-poky-linux/rkbin/git-r0/git/tools"
+ CROSS_COMPILE_ARM32=../prebuilts/gcc/linux-x86/arm/gcc-linaro-6.3.1-2017.05-x86_64_arm-linux-gnueabihf/bin/arm-linux-gnueabihf-
+ CROSS_COMPILE_ARM64=../prebuilts/gcc/linux-x86/aarch64/gcc-linaro-6.3.1-2017.05-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-
++CFLAGS=${TOOLCHAIN_OPTIONS}
+ ########################################### User not touch #############################################
+ # Declare global INI file searching index name for every chip, update in select_chip_info()
+ RKCHIP=
+@@ -759,7 +760,7 @@
+ handle_args_late
+ sub_commands
+ clean_files
+-make PYTHON=python2 CROSS_COMPILE=${TOOLCHAIN} all --jobs=${JOB}
++make PYTHON=python2 CROSS_COMPILE=${TOOLCHAIN} TOOLCHAIN_OPTIONS="${TOOLCHAIN_OPTIONS}" all --jobs=${JOB}
+ pack_images
+ finish
+ echo ${TOOLCHAIN}
